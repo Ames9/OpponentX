@@ -141,11 +141,13 @@ export default function OpponentXGame() {
   const [teamSearch, setTeamSearch] = useState("");
 
   const startGame = (teamStr: string, years: number[]) => {
-    const fg = allGames.filter(
-      (g) =>
-        (g.baseTeam === teamStr || g.opponentTeam === teamStr) &&
-        years.includes(g.season)
-    );
+    const fg = allGames
+      .filter(
+        (g) =>
+          (g.baseTeam === teamStr || g.opponentTeam === teamStr) &&
+          years.includes(g.season)
+      )
+      .sort(() => Math.random() - 0.5);
     setFilteredGames(fg);
     setBaseTeamSetup(teamStr);
     setActiveYears(years);
