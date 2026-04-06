@@ -43,22 +43,27 @@ type Game = {
   };
 };
 
-const ALL_YEARS = [2021, 2022, 2023, 2024, 2025];
 const allGames = gamesDataRaw as Game[];
 
 // ---- Team Selection Screen ----
+const MIN_YEAR = 2016;
+const MAX_YEAR = 2025;
+const YEAR_SPAN = MAX_YEAR - MIN_YEAR;
+
 function TeamSelectScreen({
   onStart,
 }: {
   onStart: (team: string, years: number[]) => void;
 }) {
-  const [selectedYears, setSelectedYears] = useState<number[]>([2021, 2022, 2023, 2024, 2025]);
+  const [yearRange, setYearRange] = useState<[number, number]>([2021, 2025]);
 
-  const toggleYear = (y: number) => {
-    setSelectedYears((prev) =>
-      prev.includes(y) ? prev.filter((x) => x !== y) : [...prev, y]
-    );
-  };
+  const selectedYears = useMemo(
+    () => Array.from({ length: yearRange[1] - yearRange[0] + 1 }, (_, i) => yearRange[0] + i),
+    [yearRange]
+  );
+
+  const leftPct = ((yearRange[0] - MIN_YEAR) / YEAR_SPAN) * 100;
+  const rightPct = ((yearRange[1] - MIN_YEAR) / YEAR_SPAN) * 100;
 
   return (
     <main className="min-h-screen flex items-center justify-center p-6 flex-col">
@@ -71,32 +76,65 @@ function TeamSelectScreen({
         <h1 className="text-4xl font-black text-white mb-2 uppercase tracking-tighter">
           Opponent X
         </h1>
-        <p className="text-slate-400 mb-6">
+        <p className="text-slate-400 mb-4">
           Select your favorite team to start guessing their past games.
         </p>
+        <div className="inline-flex items-center gap-2 bg-primary/10 border border-primary/30 text-primary text-xs font-bold px-3 py-1.5 rounded-full mb-6">
+          <span>Updated: Now covering 2016 – 2025 (all games)</span>
+        </div>
 
-        {/* Year Filter */}
-        <div className="mb-6">
-          <p className="text-xs text-slate-500 uppercase tracking-widest font-bold mb-3">Season Range</p>
-          <div className="flex gap-2 justify-center flex-wrap">
-            {ALL_YEARS.map((y) => (
-              <button
-                key={y}
-                onClick={() => toggleYear(y)}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-sm font-bold border transition-all",
-                  selectedYears.includes(y)
-                    ? "bg-primary border-primary text-white shadow-md shadow-primary/20"
-                    : "bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-500"
-                )}
-              >
-                {y}
-              </button>
-            ))}
+        {/* Season Range Slider */}
+        <div className="mb-8">
+          <p className="text-xs text-slate-500 uppercase tracking-widest font-bold mb-4">Season Range</p>
+
+          {/* Selected range label */}
+          <div className="flex justify-between items-baseline mb-4 px-1">
+            <span className="text-xs text-slate-500">{MIN_YEAR}</span>
+            <span className="text-lg font-black text-white">
+              {yearRange[0] === yearRange[1] ? yearRange[0] : `${yearRange[0]} – ${yearRange[1]}`}
+              <span className="text-xs font-normal text-slate-400 ml-2">
+                ({selectedYears.length} season{selectedYears.length !== 1 ? "s" : ""})
+              </span>
+            </span>
+            <span className="text-xs text-slate-500">{MAX_YEAR}</span>
           </div>
-          {selectedYears.length === 0 && (
-            <p className="text-xs text-error mt-2">Select at least one season.</p>
-          )}
+
+          {/* Slider track */}
+          <div className="relative flex items-center" style={{ height: "32px" }}>
+            {/* Background track */}
+            <div className="absolute w-full h-1.5 bg-slate-700 rounded-full" />
+            {/* Active fill */}
+            <div
+              className="absolute h-1.5 bg-primary rounded-full pointer-events-none"
+              style={{ left: `${leftPct}%`, width: `${rightPct - leftPct}%` }}
+            />
+            {/* Start handle */}
+            <input
+              type="range"
+              min={MIN_YEAR}
+              max={MAX_YEAR}
+              value={yearRange[0]}
+              onChange={(e) => {
+                const v = Math.min(Number(e.target.value), yearRange[1]);
+                setYearRange([v, yearRange[1]]);
+              }}
+              className="range-thumb"
+              style={{ zIndex: yearRange[0] >= MAX_YEAR - 1 ? 5 : 3 }}
+            />
+            {/* End handle */}
+            <input
+              type="range"
+              min={MIN_YEAR}
+              max={MAX_YEAR}
+              value={yearRange[1]}
+              onChange={(e) => {
+                const v = Math.max(Number(e.target.value), yearRange[0]);
+                setYearRange([yearRange[0], v]);
+              }}
+              className="range-thumb"
+              style={{ zIndex: 4 }}
+            />
+          </div>
         </div>
 
         {/* Team List */}
@@ -104,11 +142,8 @@ function TeamSelectScreen({
           {NFL_TEAMS.map((team) => (
             <button
               key={team.value}
-              onClick={() => {
-                if (selectedYears.length > 0) onStart(team.value, selectedYears);
-              }}
-              disabled={selectedYears.length === 0}
-              className="w-full bg-slate-900 border border-slate-700 hover:border-primary hover:bg-slate-800 text-white font-bold py-4 px-4 rounded-xl transition-all flex justify-between items-center relative overflow-hidden disabled:opacity-40 disabled:cursor-not-allowed"
+              onClick={() => onStart(team.value, selectedYears)}
+              className="w-full bg-slate-900 border border-slate-700 hover:border-primary hover:bg-slate-800 text-white font-bold py-4 px-4 rounded-xl transition-all flex justify-between items-center relative overflow-hidden"
             >
               <div className="absolute left-0 top-0 bottom-0 w-2" style={{ backgroundColor: team.color }} />
               <span className="ml-3">{team.label}</span>
@@ -164,8 +199,14 @@ export default function OpponentXGame() {
   };
 
   const nextGame = () => {
-    const next = (currentGameIndex + 1) % filteredGames.length;
-    resetGameState(next);
+    const next = currentGameIndex + 1;
+    if (next >= filteredGames.length) {
+      // 全ゲーム消化したら再シャッフルして最初から
+      setFilteredGames((prev) => [...prev].sort(() => Math.random() - 0.5));
+      resetGameState(0);
+    } else {
+      resetGameState(next);
+    }
   };
 
   const triggerShake = () => {

@@ -1,63 +1,20 @@
 import json
+import gc
 import pandas as pd
 
 # ---- 設定 ----
-ALL_YEARS = [2021, 2022, 2023, 2024, 2025]
-GAME_LIMIT = 500
+ALL_YEARS = list(range(2016, 2026))
 
 print("Importing Schedule data...")
 sched_all = pd.read_csv("https://github.com/nflverse/nfldata/raw/master/data/games.csv")
 sched = sched_all[sched_all['season'].isin(ALL_YEARS)].copy()
 print(f"  {len(sched)} games in {ALL_YEARS}")
 
-# SHUFFLE & limit
-sched = sched.sample(frac=1, random_state=42).reset_index(drop=True).head(GAME_LIMIT)
-target_game_ids = set(sched['game_id'].tolist())
+# SHUFFLE
+sched = sched.sample(frac=1, random_state=42).reset_index(drop=True)
 
-# ---- PBP: 年ごとにロードしてgame_idで先にフィルタリング（メモリ節約）----
-pbp_list = []
-for y in ALL_YEARS:
-    try:
-        print(f"Loading {y} PBP...")
-        p = pd.read_parquet(
-            f"https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{y}.parquet"
-        )
-        p_filtered = p[p['game_id'].isin(target_game_ids)]
-        pbp_list.append(p_filtered)
-        print(f"  {y}: {len(p_filtered)} plays loaded")
-    except Exception as e:
-        print(f"  Skipping PBP {y}: {e}")
-
-pbp = pd.concat(pbp_list, ignore_index=True)
-print(f"Total PBP rows: {len(pbp)}")
-
-# ---- Player Stats: 年ごとにロード（Top Performers用）----
-# Player Statsにはgame_idがないため、(season, week, recent_team)でマッチングする
-stats_list = []
-for y in ALL_YEARS:
-    try:
-        print(f"Loading {y} Player Stats...")
-        s = pd.read_parquet(
-            f"https://github.com/nflverse/nflverse-data/releases/download/player_stats/player_stats_{y}.parquet"
-        )
-        stats_list.append(s)
-        print(f"  {y}: {len(s)} player rows loaded")
-    except Exception as e:
-        print(f"  Skipping Stats {y}: {e}")
-
-player_stats = pd.concat(stats_list, ignore_index=True) if stats_list else pd.DataFrame()
-
-# (season, week, recent_team) でグループ化しておく
-if not player_stats.empty:
-    if 'season_type' in player_stats.columns:
-        player_stats = player_stats[player_stats['season_type'] == 'REG']
-    stats_lookup = player_stats.groupby(['season', 'week', 'recent_team'])
-else:
-    stats_lookup = None
-print(f"Total Player Stats rows: {len(player_stats)}")
-
-# ---- index for fast lookup ----
-pbp_grouped = pbp.groupby('game_id')
+# 年ごとのgame_idセット
+sched_by_year = {y: set(sched[sched['season'] == y]['game_id'].tolist()) for y in ALL_YEARS}
 
 
 def safe_sum(val):
@@ -69,7 +26,6 @@ def safe_sum(val):
 
 
 def get_quarter_scores(game_pbp, home_team, away_team):
-    """fetchdata_modify.mdの修正: home_score_post/away_score_postを使う"""
     home_qs = [0, 0, 0, 0]
     away_qs = [0, 0, 0, 0]
     for q in range(1, 6):
@@ -79,7 +35,6 @@ def get_quarter_scores(game_pbp, home_team, away_team):
                 break
             continue
         last_play = q_plays.iloc[-1]
-        # home_score_post / away_score_post を使う（オフバイワンバグ修正）
         if 'home_score_post' in last_play.index:
             current_h = safe_sum(last_play['home_score_post'])
             current_a = safe_sum(last_play['away_score_post'])
@@ -101,8 +56,7 @@ def get_quarter_scores(game_pbp, home_team, away_team):
     return home_qs, away_qs
 
 
-def _add_from_player_stats(results, season, week, team_name, team_key):
-    """Player Statsから取得する（season+week+team 紐付け）。成功したらTrue"""
+def _add_from_player_stats(results, stats_lookup, season, week, team_name, team_key):
     if stats_lookup is None:
         return False
     try:
@@ -110,7 +64,6 @@ def _add_from_player_stats(results, season, week, team_name, team_key):
     except KeyError:
         return False
 
-    # QB (passing)
     passers = team_s[
         team_s['passing_yards'].notna() & (team_s['passing_yards'] > 0)
     ].sort_values('passing_yards', ascending=False)
@@ -128,7 +81,6 @@ def _add_from_player_stats(results, season, week, team_name, team_key):
                 "statLine": f"{atts} Att, {yds} Yds, {tds} TD, {ints} INT"
             })
 
-    # RB (rushing)
     rushers = team_s[
         team_s['rushing_yards'].notna() & (team_s['rushing_yards'] > 0)
     ].sort_values('rushing_yards', ascending=False)
@@ -145,7 +97,6 @@ def _add_from_player_stats(results, season, week, team_name, team_key):
                 "statLine": f"{carries} Car, {yds} Yds, {tds} TD"
             })
 
-    # REC (receiving) — use actual position from data (WR, TE, RB, etc.)
     recvs = team_s[
         team_s['receiving_yards'].notna() & (team_s['receiving_yards'] > 0)
     ].sort_values('receiving_yards', ascending=False)
@@ -154,7 +105,6 @@ def _add_from_player_stats(results, season, week, team_name, team_key):
         name_col = 'player_display_name' if 'player_display_name' in re.index else 'player_name'
         name = str(re[name_col]) if name_col in re.index else ''
         if name and name != 'nan':
-            # position カラムから実際のポジション名を取得（WR / TE / RB など）
             pos = str(re['position']) if 'position' in re.index and str(re['position']) not in ('nan', '') else 'REC'
             recs = safe_sum(re['receptions']) if 'receptions' in re.index else 0
             yds = safe_sum(re['receiving_yards'])
@@ -167,7 +117,6 @@ def _add_from_player_stats(results, season, week, team_name, team_key):
 
 
 def _add_from_pbp(results, game_pbp, team_name, team_key):
-    """PBPから集計（フォールバック）"""
     passers_pbp = game_pbp[game_pbp['play_type'] == 'pass'].groupby(
         ['posteam', 'passer_player_name']
     ).agg(
@@ -213,78 +162,119 @@ def _add_from_pbp(results, game_pbp, team_name, team_key):
         })
 
 
-def get_top_performers(season, week, home_team, away_team, game_pbp):
-    """Player Stats優先・PBPフォールバックでトップパフォーマーを取得"""
+def get_top_performers(season, week, home_team, away_team, game_pbp, stats_lookup):
     results = []
     for team_name, team_key in [(home_team, "baseTeam"), (away_team, "opponentTeam")]:
-        ok = _add_from_player_stats(results, season, week, team_name, team_key)
+        ok = _add_from_player_stats(results, stats_lookup, season, week, team_name, team_key)
         if not ok:
             _add_from_pbp(results, game_pbp, team_name, team_key)
     return results
 
 
 def get_tds(game_pbp, team_name):
-    """自チームのTDプレイのdescを返す"""
     mask = (game_pbp['touchdown'] == 1) & (game_pbp['td_team'] == team_name)
     return game_pbp[mask]['desc'].dropna().tolist()
 
 
-# ---- メイン処理 ----
+# ---- 年ごとにPBP・Stats読み込み→処理→即解放 ----
 games_data = []
-print(f"\nProcessing {len(sched)} games...")
+print(f"\nProcessing {len(sched)} games across {len(ALL_YEARS)} seasons...")
 
-for idx, row in sched.iterrows():
-    game_id = row['game_id']
-    home_team = row['home_team']
-    away_team = row['away_team']
-    season = int(row['season'])
-    week = int(row['week'])
-    espn_id = row.get('espn', None)
-    espn_url = f"https://www.espn.com/nfl/game/_/gameId/{int(espn_id)}" if pd.notna(espn_id) and espn_id else None
-
-    try:
-        game_pbp = pbp_grouped.get_group(game_id)
-    except KeyError:
+for y in ALL_YEARS:
+    year_game_ids = sched_by_year.get(y, set())
+    if not year_game_ids:
         continue
 
-    h_pass = safe_sum(game_pbp.loc[(game_pbp['posteam'] == home_team) & (game_pbp['play_type'] == 'pass'), 'passing_yards'].sum())
-    a_pass = safe_sum(game_pbp.loc[(game_pbp['posteam'] == away_team) & (game_pbp['play_type'] == 'pass'), 'passing_yards'].sum())
-    h_rush = safe_sum(game_pbp.loc[(game_pbp['posteam'] == home_team) & (game_pbp['play_type'] == 'run'), 'rushing_yards'].sum())
-    a_rush = safe_sum(game_pbp.loc[(game_pbp['posteam'] == away_team) & (game_pbp['play_type'] == 'run'), 'rushing_yards'].sum())
-    h_to = safe_sum(game_pbp.loc[(game_pbp['posteam'] == home_team) & ((game_pbp['interception'] == 1) | (game_pbp['fumble_lost'] == 1)), 'play_id'].count())
-    a_to = safe_sum(game_pbp.loc[(game_pbp['posteam'] == away_team) & ((game_pbp['interception'] == 1) | (game_pbp['fumble_lost'] == 1)), 'play_id'].count())
+    year_sched = sched[sched['season'] == y]
 
-    home_qs, away_qs = get_quarter_scores(game_pbp, home_team, away_team)
-    hint3 = get_top_performers(season, week, home_team, away_team, game_pbp)
+    # PBP読み込み
+    try:
+        print(f"Loading {y} PBP...")
+        pbp_raw = pd.read_parquet(
+            f"https://github.com/nflverse/nflverse-data/releases/download/pbp/play_by_play_{y}.parquet"
+        )
+        pbp_year = pbp_raw[pbp_raw['game_id'].isin(year_game_ids)].copy()
+        del pbp_raw
+        gc.collect()
+        print(f"  {y}: {len(pbp_year)} plays for {len(year_game_ids)} games")
+    except Exception as e:
+        print(f"  Skipping PBP {y}: {e}")
+        continue
 
-    game_obj = {
-        "gameId": game_id,
-        "season": season,
-        "week": week,
-        "espnUrl": espn_url,
-        "baseTeam": home_team,
-        "opponentTeam": away_team,
-        "isHome": True,
-        "hints": {
-            "hint1_teamStats": {
-                "baseTeam": {"passYds": h_pass, "rushYds": h_rush, "turnovers": h_to},
-                "opponentTeam": {"passYds": a_pass, "rushYds": a_rush, "turnovers": a_to}
-            },
-            "hint2_qByQ": {
-                "baseTeam": home_qs, "baseTotal": sum(home_qs),
-                "opponentTeam": away_qs, "opponentTotal": sum(away_qs)
-            },
-            "hint2_tds": {
-                "baseTeam": get_tds(game_pbp, home_team),
-                "opponentTeam": get_tds(game_pbp, away_team)
-            },
-            "hint3_topPerformers": hint3
-        }
-    }
-    games_data.append(game_obj)
+    # Player Stats読み込み
+    stats_lookup = None
+    try:
+        print(f"Loading {y} Player Stats...")
+        stats_raw = pd.read_parquet(
+            f"https://github.com/nflverse/nflverse-data/releases/download/player_stats/player_stats_{y}.parquet"
+        )
+        if 'season_type' in stats_raw.columns:
+            stats_raw = stats_raw[stats_raw['season_type'] == 'REG']
+        stats_lookup = stats_raw.groupby(['season', 'week', 'recent_team'])
+        print(f"  {y}: {len(stats_raw)} player rows")
+        del stats_raw
+        gc.collect()
+    except Exception as e:
+        print(f"  Skipping Stats {y}: {e}")
 
-    if len(games_data) % 50 == 0:
-        print(f"  Processed {len(games_data)} games...")
+    # ゲーム処理
+    pbp_grouped = pbp_year.groupby('game_id')
+
+    for idx, row in year_sched.iterrows():
+        game_id = row['game_id']
+        home_team = row['home_team']
+        away_team = row['away_team']
+        season = int(row['season'])
+        week = int(row['week'])
+        espn_id = row.get('espn', None)
+        espn_url = f"https://www.espn.com/nfl/game/_/gameId/{int(espn_id)}" if pd.notna(espn_id) and espn_id else None
+
+        try:
+            game_pbp = pbp_grouped.get_group(game_id)
+        except KeyError:
+            continue
+
+        h_pass = safe_sum(game_pbp.loc[(game_pbp['posteam'] == home_team) & (game_pbp['play_type'] == 'pass'), 'passing_yards'].sum())
+        a_pass = safe_sum(game_pbp.loc[(game_pbp['posteam'] == away_team) & (game_pbp['play_type'] == 'pass'), 'passing_yards'].sum())
+        h_rush = safe_sum(game_pbp.loc[(game_pbp['posteam'] == home_team) & (game_pbp['play_type'] == 'run'), 'rushing_yards'].sum())
+        a_rush = safe_sum(game_pbp.loc[(game_pbp['posteam'] == away_team) & (game_pbp['play_type'] == 'run'), 'rushing_yards'].sum())
+        h_to = safe_sum(game_pbp.loc[(game_pbp['posteam'] == home_team) & ((game_pbp['interception'] == 1) | (game_pbp['fumble_lost'] == 1)), 'play_id'].count())
+        a_to = safe_sum(game_pbp.loc[(game_pbp['posteam'] == away_team) & ((game_pbp['interception'] == 1) | (game_pbp['fumble_lost'] == 1)), 'play_id'].count())
+
+        home_qs, away_qs = get_quarter_scores(game_pbp, home_team, away_team)
+        hint3 = get_top_performers(season, week, home_team, away_team, game_pbp, stats_lookup)
+
+        games_data.append({
+            "gameId": game_id,
+            "season": season,
+            "week": week,
+            "espnUrl": espn_url,
+            "baseTeam": home_team,
+            "opponentTeam": away_team,
+            "isHome": True,
+            "hints": {
+                "hint1_teamStats": {
+                    "baseTeam": {"passYds": h_pass, "rushYds": h_rush, "turnovers": h_to},
+                    "opponentTeam": {"passYds": a_pass, "rushYds": a_rush, "turnovers": a_to}
+                },
+                "hint2_qByQ": {
+                    "baseTeam": home_qs, "baseTotal": sum(home_qs),
+                    "opponentTeam": away_qs, "opponentTotal": sum(away_qs)
+                },
+                "hint2_tds": {
+                    "baseTeam": get_tds(game_pbp, home_team),
+                    "opponentTeam": get_tds(game_pbp, away_team)
+                },
+                "hint3_topPerformers": hint3
+            }
+        })
+
+        if len(games_data) % 50 == 0:
+            print(f"  Processed {len(games_data)} games...")
+
+    del pbp_year, pbp_grouped
+    gc.collect()
+    print(f"  {y} done. Total so far: {len(games_data)} games")
 
 print(f"\nSaving to src/data/games.json...")
 with open('src/data/games.json', 'w') as f:
