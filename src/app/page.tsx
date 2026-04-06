@@ -45,6 +45,10 @@ type Game = {
 
 const allGames = gamesDataRaw as Game[];
 
+function stripPenaltyIdentifiers(tdText: string): string {
+  return tdText.replace(/Penalty on [A-Z]+-\d+-[A-Za-z]\.[A-Za-z]+,/g, "Penalty on [redacted],");
+}
+
 // ---- Team Selection Screen ----
 const MIN_YEAR = 2016;
 const MAX_YEAR = 2025;
@@ -460,7 +464,7 @@ export default function OpponentXGame() {
                           key={i}
                           className="p-3 bg-slate-900/60 rounded-lg border border-slate-800 text-slate-300 text-xs leading-relaxed font-mono"
                         >
-                          {td}
+                          {stripPenaltyIdentifiers(td)}
                         </div>
                       ))}
                     </div>
