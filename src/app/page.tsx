@@ -45,8 +45,14 @@ type Game = {
 
 const allGames = gamesDataRaw as Game[];
 
-function stripPenaltyIdentifiers(tdText: string): string {
-  return tdText.replace(/Penalty on [A-Z]+-\d+-[A-Za-z]\.[A-Za-z]+,/g, "Penalty on [redacted],");
+function stripOpponentIdentifiers(tdText: string, opponentCode: string): string {
+  const code = opponentCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let result = tdText;
+  // "NO 40" → "40" (field position)
+  result = result.replace(new RegExp(`\\b${code}\\s+(\\d+)\\b`, 'g'), '$1');
+  // "NO-Marshon Lattimore" or "NO-40-M.Lattimore" → name only
+  result = result.replace(new RegExp(`\\b${code}-(?:\\d+-)?`, 'g'), '');
+  return result;
 }
 
 // ---- Team Selection Screen ----
@@ -464,7 +470,7 @@ export default function OpponentXGame() {
                           key={i}
                           className="p-3 bg-slate-900/60 rounded-lg border border-slate-800 text-slate-300 text-xs leading-relaxed font-mono"
                         >
-                          {stripPenaltyIdentifiers(td)}
+                          {stripOpponentIdentifiers(td, displayOpponentTeam)}
                         </div>
                       ))}
                     </div>

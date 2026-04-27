@@ -1,36 +1,125 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Opponent X
 
-## Getting Started
+NFLの過去の試合スコアと統計から、対戦相手チームを当てるブラウザゲーム。
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## ゲームの遊び方
+
+1. **チームと年代を選ぶ** — 好きなNFLチーム（32チーム）と、対象シーズン（2016〜2025）を選択
+2. **試合が出題される** — 選んだチームの過去の試合がランダムに表示
+3. **ヒントを見ながら対戦相手を当てる**
+   - ヒントLv1（最初から）: 選手成績（QB/RB/WRのスタッツ）
+   - ヒントLv2（1ミス後）: TDプレーの説明文
+   - ヒントLv3（2ミス後）: ホーム/アウェイ、シーズン・週番号
+4. **3回ミスでゲームオーバー**。正解するとESPNの試合ページへのリンクが表示され、次の試合へ
+
+---
+
+## ファイル構成
+
+```
+OpponentX/
+├── src/
+│   ├── app/
+│   │   ├── page.tsx        # ゲームロジック・UI（メインコンポーネント）
+│   │   ├── layout.tsx      # ルートレイアウト
+│   │   └── globals.css     # グローバルスタイル・Tailwindテーマ
+│   ├── lib/
+│   │   ├── constants.ts    # 32チームのカラー・ディビジョン情報
+│   │   └── utils.ts        # ユーティリティ（cn関数）
+│   └── data/
+│       └── games.json      # 試合データ（2016〜2025年、2,761試合）
+├── fetch_data.py            # nflverseからデータを取得・整形するスクリプト
+├── teamcolorcode.csv        # チームカラーの参照CSV
+└── public/                  # 静的アセット
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## データ構造
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`games.json` の1試合あたりのデータ例:
 
-## Learn More
+```json
+{
+  "gameId": "2016_16_DET_DAL",
+  "season": 2016,
+  "week": 16,
+  "espnUrl": "https://...",
+  "baseTeam": "DAL",
+  "opponentTeam": "DET",
+  "isHome": true,
+  "hints": {
+    "hint1_teamStats": {
+      "baseTeam":     { "passYds": 212, "rushYds": 88, "turnovers": 1 },
+      "opponentTeam": { "passYds": 190, "rushYds": 64, "turnovers": 2 }
+    },
+    "hint2_qByQ": {
+      "baseTeam": [7, 3, 7, 6], "baseTotal": 23,
+      "opponentTeam": [0, 7, 0, 6], "opponentTotal": 13
+    },
+    "hint2_tds": {
+      "baseTeam": ["Dak Prescott 1-yd rush TD", "..."],
+      "opponentTeam": ["Golden Tate 12-yd pass from Stafford", "..."]
+    },
+    "hint3_topPerformers": [
+      { "team": "baseTeam", "position": "QB", "playerName": "Dak Prescott", "statLine": "24/35, 212 Yds, 1 TD" }
+    ]
+  }
+}
+```
 
-To learn more about Next.js, take a look at the following resources:
+---
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 技術スタック
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| 分類 | 技術 |
+|------|------|
+| フレームワーク | Next.js (App Router) |
+| UI | React 19 + TypeScript |
+| スタイリング | Tailwind CSS v4 |
+| アニメーション | Framer Motion v12 |
+| アイコン | Lucide React |
+| データ | JSON（クライアントサイド、バックエンドなし） |
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## データ取得・更新 (fetch_data.py)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+[nflverse](https://github.com/nflverse/nflverse-data) の公開データを使用。
+
+```bash
+pip install pandas pyarrow requests
+python fetch_data.py
+```
+
+処理内容:
+- 対象年: 2016〜2025
+- ソース: `games.csv`（スケジュール）、`play_by_play_YYYY.parquet`（プレー詳細）、`player_stats_YYYY.parquet`（個人成績）
+- 出力: `src/data/games.json`
+
+---
+
+## 開発・起動
+
+```bash
+npm install
+npm run dev     # http://localhost:3000
+npm run build
+npm run start
+```
+
+---
+
+## デザインシステム
+
+ダークテーマ（slate-950ベース）。選択チームのカラーがCSSカスタムプロパティで動的に適用される。
+
+| 変数 | 色 |
+|------|----|
+| `--color-background` | `#0f172a` (slate-950) |
+| `--color-foreground` | `#f8fafc` (slate-50) |
+| `--color-primary` | `#3b82f6` (blue-500) |
+| `--color-accent` | `#22c55e` (green-500) |
+| `--color-error` | `#ef4444` (red-500) |
